@@ -1,29 +1,19 @@
 package com.scms.service;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-
-import org.springframework.stereotype.Service;
-
-import com.scms.dto.AdminDtos.CategoryBreakdown;
-import com.scms.dto.AdminDtos.DailyCount;
-import com.scms.dto.AdminDtos.ReportSummary;
-import com.scms.dto.AdminDtos.StatusBreakdown;
-import com.scms.dto.AdminDtos.UserComplaintCount;
+import com.scms.dto.AdminDtos.*;
 import com.scms.model.Complaint;
 import com.scms.repository.ComplaintRepository;
 import com.scms.repository.ComplaintRepository.CategoryCount;
 import com.scms.repository.ComplaintRepository.StatusCount;
 import com.scms.repository.UserRepository;
-
 import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * AdminReportService — analytics/reporting, split out of the v1.3 god-class
