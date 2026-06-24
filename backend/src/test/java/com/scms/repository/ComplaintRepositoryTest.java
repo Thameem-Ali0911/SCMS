@@ -1,41 +1,44 @@
 package com.scms.repository;
 
-import com.scms.model.Category;
-import com.scms.model.Complaint;
-import com.scms.model.Role;
-import com.scms.model.User;
+import java.util.List;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.ActiveProfiles;
 
-import java.util.List;
-import java.util.Set;
-
-import static org.junit.jupiter.api.Assertions.*;
+import com.scms.model.Category;
+import com.scms.model.Complaint;
+import com.scms.model.Role;
+import com.scms.model.User;
 
 /**
  * ComplaintRepositoryTest — @DataJpaTest against an in-memory H2 database.
  *
- * Verifies two things the v1.3 report flagged as untested:
- *   1. The @SQLRestriction("is_deleted = false") soft-delete filter actually
- *      excludes deleted rows from EVERY query, including plain findAll().
- *   2. The aggregate GROUP BY queries that replaced the N+1 loops
- *      (countGroupedByStatus, findUnassignedQueue's priority ordering)
- *      return correct results, not just "fewer queries."
+ * Verifies two things the v1.3 report flagged as untested: 1. The
+ * @SQLRestriction("is_deleted = false") soft-delete filter actually excludes
+ * deleted rows from EVERY query, including plain findAll(). 2. The aggregate
+ * GROUP BY queries that replaced the N+1 loops (countGroupedByStatus,
+ * findUnassignedQueue's priority ordering) return correct results, not just
+ * "fewer queries."
  */
 @DataJpaTest
 @ActiveProfiles("test")
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class ComplaintRepositoryTest {
 
-    @Autowired private ComplaintRepository complaintRepository;
-    @Autowired private UserRepository userRepository;
-    @Autowired private CategoryRepository categoryRepository;
-    @Autowired private RoleRepository roleRepository;
+    @Autowired
+    private ComplaintRepository complaintRepository;
+    @Autowired
+    private UserRepository userRepository;
+    @Autowired
+    private CategoryRepository categoryRepository;
+    @Autowired
+    private RoleRepository roleRepository;
 
     private User student;
     private Category category;
