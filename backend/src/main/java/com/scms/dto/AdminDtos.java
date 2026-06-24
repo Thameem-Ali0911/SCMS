@@ -15,17 +15,17 @@ import java.util.Set;
  * UserResponse deliberately omits password_hash. Always think:
  * "what does the frontend actually need?" and expose only that.
  *
- * Nested static classes grouped under AdminDtos so they're imported
- * together:  import com.scms.dto.AdminDtos.*;
+ * CHANGE in v2.0: ChangeRoleRequest.role now accepts "USER", "STAFF", or
+ * "ADMIN" (validated against com.scms.common.Roles.isValid() in
+ * AdminUserService) — v1.3 only ever supported a USER/ADMIN toggle.
+ * StaffWorkload is new — powers the admin "Assignments" page so an admin can
+ * see each staff member's current load before assigning a new complaint to
+ * them.
  */
 public class AdminDtos {
 
     // ── User management responses ──────────────────────────────────────────
 
-    /**
-     * Full user profile sent to the admin Users page.
-     * Includes complaint count so we don't need a second API call.
-     */
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class UserResponse {
         private Long            id;
@@ -34,62 +34,62 @@ public class AdminDtos {
         private String          email;
         private String          phone;
         private boolean         active;
-        private Set<String>     roles;          // ["USER"] or ["ADMIN"]
+        private Set<String>     roles;
         private LocalDateTime   createdAt;
         private long            totalComplaints;
-        private long            openComplaints;  // SUBMITTED + IN_REVIEW + IN_PROGRESS
+        private long            openComplaints;
         private long            resolvedComplaints;
     }
 
-    // ── User mutation request bodies ──────────────────────────────────────
+    // ── User mutation request bodies ────────────────────────────────────────
 
     @Data @NoArgsConstructor @AllArgsConstructor
     public static class ToggleUserStatusRequest {
         @NotNull(message = "active flag is required")
-        private boolean active;
+        private Boolean active;
     }
 
     @Data @NoArgsConstructor @AllArgsConstructor
     public static class ChangeRoleRequest {
         @NotBlank(message = "role is required")
-        private String role;     // "USER" or "ADMIN"
+        private String role;     // "USER", "STAFF", or "ADMIN"
     }
 
-    // ── Report response shapes ─────────────────────────────────────────────
+    // ── Staff workload (for the assignment workflow) ────────────────────────
 
-    /**
-     * ReportSummary — top-level KPI snapshot.
-     * Drives the summary stat cards at the top of the Reports page.
-     */
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class StaffWorkload {
+        private Long   staffId;
+        private String staffName;
+        private String email;
+        private long   assignedOpen;       // currently assigned, not yet resolved/closed/rejected
+        private long   resolvedTotal;      // lifetime resolved count — a rough "experience" signal
+    }
+
+    // ── Report response shapes ───────────────────────────────────────────────
+
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class ReportSummary {
         private long   totalComplaints;
-        private long   openComplaints;          // SUBMITTED + IN_REVIEW + IN_PROGRESS
+        private long   openComplaints;
         private long   resolvedComplaints;
         private long   rejectedComplaints;
         private long   totalUsers;
         private long   activeUsers;
-        private double avgResolutionHours;      // mean hours from submittedAt → resolvedAt
-        private long   complaintsThisMonth;     // filed in the current calendar month
+        private double avgResolutionHours;
+        private long   complaintsThisMonth;
         private long   complaintsLastMonth;
-        private double monthOverMonthChange;    // percentage change (can be negative)
+        private double monthOverMonthChange;
+        private long   unassignedComplaints;
     }
 
-    /**
-     * StatusBreakdown — one row per complaint status with its count.
-     * Used for pie/donut chart on Reports page.
-     */
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class StatusBreakdown {
-        private String status;   // "SUBMITTED", "IN_PROGRESS", etc.
+        private String status;
         private long   count;
         private double percentage;
     }
 
-    /**
-     * CategoryBreakdown — one row per category with its count.
-     * Used for horizontal bar chart.
-     */
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class CategoryBreakdown {
         private String category;
@@ -97,10 +97,6 @@ public class AdminDtos {
         private double percentage;
     }
 
-    /**
-     * UserComplaintCount — one row per user, ranked by complaint volume.
-     * Top-10 list in the Reports page.
-     */
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class UserComplaintCount {
         private Long   userId;
@@ -111,13 +107,9 @@ public class AdminDtos {
         private long   resolved;
     }
 
-    /**
-     * DailyCount — one row per calendar day with complaint count.
-     * Last 30 days, used for the area/line chart.
-     */
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class DailyCount {
-        private LocalDate date;   // "2026-06-01"
+        private LocalDate date;
         private long      count;
     }
 }

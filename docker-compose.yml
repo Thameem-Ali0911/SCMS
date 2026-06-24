@@ -1,0 +1,74 @@
+# docker-compose.yml — full local/self-hosted stack: MySQL + Spring Boot + React/Nginx.
+#
+# Quick start:
+#   cp .env.example .env      # fill in real secrets before any non-local use
+#   docker compose up --build
+#
+# Then visit http://localhost:8080 (frontend, proxies /api to the backend).
+#
+# MENTOR NOTE — fixing the v1.3 "No docker-compose.yml" / DevOps:1/10 finding.
+# Each service has a healthcheck and `depends_on: condition: service_healthy`
+# so the backend doesn't start trying to connect to MySQL before MySQL is
+# actually accepting connections, and the frontend doesn't serve traffic
+# before the backend is healthy.
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-scms_db}
+      MYSQL_ROOT_PASSWORD: ${DB_PASS:-root}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - scms_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_PASS:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      DB_URL: jdbc:mysql://mysql:3306/${DB_NAME:-scms_db}?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=Asia/Kolkata&allowPublicKeyRetrieval=true
+      DB_USER: root
+      DB_PASS: ${DB_PASS:-root}
+      JWT_SECRET: ${JWT_SECRET:?Set a long random JWT_SECRET in your .env file}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      HSTS_ENABLED: ${HSTS_ENABLED:-false}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+    ports:
+      - "${BACKEND_PORT:-8081}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  scms_mysql_data:

@@ -26,7 +26,11 @@ import java.time.LocalDateTime;
  * can still filter: WHERE JSON_EXTRACT(new_values, '$.status') = 'RESOLVED'
  */
 @Entity
-@Table(name = "audit_logs")
+@Table(name = "audit_logs", indexes = {
+        @Index(name = "idx_audit_logs_entity", columnList = "entity_type, entity_id"),
+        @Index(name = "idx_audit_logs_performed_by", columnList = "performed_by"),
+        @Index(name = "idx_audit_logs_performed_at", columnList = "performed_at")
+})
 @Data
 @Builder
 @NoArgsConstructor

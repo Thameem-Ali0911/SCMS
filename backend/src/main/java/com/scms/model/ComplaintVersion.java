@@ -8,24 +8,21 @@ import java.time.LocalDateTime;
 /**
  * ComplaintVersion — immutable snapshot of a complaint at each change point.
  *
- * MENTOR NOTE — Event Sourcing lite:
- * We never overwrite history. Every time a complaint's status, priority, or
- * assignment changes, we INSERT a new ComplaintVersion row. This gives us:
- *   1. Full audit trail ("when did this become IN_PROGRESS? Who did it?")
- *   2. Rollback potential (read version N-1 to undo)
- *   3. Regulatory compliance (complaint grievance systems often require audit logs)
+ * CHANGE in v2.0 (production hardening):
+ *   complaintId (a bare Long) is now a proper @ManyToOne FK to Complaint.
+ *   v1.3 finding: "ComplaintVersion uses complaintId as a plain Long column
+ *   instead of a @ManyToOne FK with referential integrity — you can insert
+ *   an orphan version record for a complaint that doesn't exist." The FK
+ *   constraint now makes that insertion impossible at the database level,
+ *   not just by convention in application code.
  *
- * Notice there are NO @PreUpdate or @Version here — ComplaintVersion rows
- * are written once and never updated. They are append-only.
- *
- * MENTOR NOTE — Why not just use AuditLog?
- * AuditLog (system-wide) records raw JSON blobs of before/after state.
- * ComplaintVersion records structured, queryable columns — you can do:
- *   SELECT * FROM complaint_versions WHERE complaint_id = 42 ORDER BY version_number
- * without parsing JSON. Both serve different use-cases.
+ *   assignedToId is similarly upgraded to a real @ManyToOne FK (nullable —
+ *   a version snapshot taken before assignment legitimately has no assignee).
  */
 @Entity
-@Table(name = "complaint_versions")
+@Table(name = "complaint_versions", indexes = {
+        @Index(name = "idx_complaint_versions_complaint_id", columnList = "complaint_id")
+})
 @Data
 @Builder
 @NoArgsConstructor
@@ -40,9 +37,9 @@ public class ComplaintVersion {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // ── Reference to the parent complaint ────────────────────────────────
-    @Column(name = "complaint_id", nullable = false)
-    private Long complaintId;
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "complaint_id", nullable = false)
+    private Complaint complaint;
 
     @Column(name = "version_number", nullable = false)
     private Integer versionNumber;
@@ -61,8 +58,9 @@ public class ComplaintVersion {
 
     private String category;
 
-    @Column(name = "assigned_to")
-    private Long assignedToId;
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "assigned_to")
+    private User assignedTo;
 
     // ── Who changed it and when ───────────────────────────────────────────
     @ManyToOne(fetch = FetchType.LAZY)
@@ -79,7 +77,6 @@ public class ComplaintVersion {
     @Column(name = "change_type", length = 20)
     private ChangeType changeType;
 
-    // ── Status transition record ──────────────────────────────────────────
     @Column(name = "previous_status", length = 30)
     private String previousStatus;
 

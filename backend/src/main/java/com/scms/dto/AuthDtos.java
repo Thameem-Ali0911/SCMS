@@ -8,14 +8,11 @@ import java.util.Set;
 /**
  * AuthDtos — data shapes that cross the API boundary for auth endpoints.
  *
- * MENTOR NOTE — Why DTOs, not entities?
- * 1. Security  → User entity has password_hash; we never want that in a JSON response.
- * 2. Decoupling → API contract stays stable even if the DB schema changes.
- * 3. Validation → @NotBlank, @Email etc. live on the DTO, not the entity.
- *                 The entity is the DB truth; the DTO is the API contract.
- *
- * All classes are static nested classes inside AuthDtos so they're
- * imported together: import com.scms.dto.AuthDtos.*
+ * CHANGE in v2.0: AuthResponse now contains only the short-lived access
+ * token. The refresh token is never placed in a JSON body or localStorage —
+ * it is set directly as an HttpOnly cookie by AuthController, invisible to
+ * JavaScript (and therefore to an XSS payload). See JwtUtil for the full
+ * rationale.
  */
 public class AuthDtos {
 
@@ -59,15 +56,16 @@ public class AuthDtos {
         private String password;
     }
 
-    // ── Response from both login and register ────────────────────────────────
+    // ── Response from login, register, AND /api/auth/refresh ──────────────
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class AuthResponse {
-        private String      token;       // JWT — store in localStorage on the client
-        private Long        userId;
-        private String      firstName;
-        private String      lastName;
-        private String      email;
-        private Set<String> roles;       // e.g. ["USER"] or ["ADMIN"]
+        private String      accessToken;
+        private long         expiresInSeconds;
+        private Long         userId;
+        private String       firstName;
+        private String       lastName;
+        private String       email;
+        private Set<String>  roles;       // e.g. ["USER"], ["STAFF"], ["ADMIN"]
     }
 }

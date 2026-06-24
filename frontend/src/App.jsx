@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+import { SidebarProvider } from './context/SidebarContext'
 import ErrorBoundary             from './components/ErrorBoundary'
 import { ToastContainer }        from './components/Toast'
 import LoginPage                 from './pages/LoginPage'
@@ -11,6 +12,7 @@ import NewComplaint              from './pages/NewComplaint'
 import ComplaintDetail           from './pages/ComplaintDetail'
 import AdminUsers                from './pages/AdminUsers'
 import AdminReports              from './pages/AdminReports'
+import AdminAssignments          from './pages/AdminAssignments'
 import StaffQueue                from './pages/StaffQueue'
 
 /*
@@ -58,7 +60,6 @@ function StaffRoute({ children }) {
 */
 function ExpiredSessionNotice() {
   const location = useLocation()
-  const { fireToast } = useAuth()
 
   useEffect(() => {
     if (location.search.includes('expired=true')) {
@@ -108,6 +109,8 @@ function AppRoutes() {
           element={<AdminRoute><AdminUsers /></AdminRoute>} />
         <Route path="/reports"
           element={<AdminRoute><AdminReports /></AdminRoute>} />
+        <Route path="/admin/assignments"
+          element={<AdminRoute><AdminAssignments /></AdminRoute>} />
 
         {/* ── Catch-all ─────────────────────────────────────────────────── */}
         <Route path="*"
@@ -128,13 +131,15 @@ export default function App() {
     <ErrorBoundary>
       <AuthProvider>
         <BrowserRouter>
-          <AppRoutes />
-          {/*
-            ToastContainer lives here — outside all routes — so it persists
-            across page navigations. If it were inside a route component,
-            toasts would disappear when the route changed.
-          */}
-          <ToastContainer />
+          <SidebarProvider>
+            <AppRoutes />
+            {/*
+              ToastContainer lives here — outside all routes — so it persists
+              across page navigations. If it were inside a route component,
+              toasts would disappear when the route changed.
+            */}
+            <ToastContainer />
+          </SidebarProvider>
         </BrowserRouter>
       </AuthProvider>
     </ErrorBoundary>

@@ -1,51 +1,44 @@
 package com.scms.controller;
 
 import com.scms.dto.ComplaintDtos.*;
+import com.scms.dto.PageResponse;
+import com.scms.model.Complaint;
 import com.scms.model.User;
 import com.scms.repository.UserRepository;
 import com.scms.service.ComplaintService;
-import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.*;
-import org.springframework.security.access.AccessDeniedException;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * ComplaintController — HTTP layer for all complaint operations.
  *
- * MENTOR NOTE — @AuthenticationPrincipal:
- * Spring Security stores the authenticated User in the SecurityContext.
- * @AuthenticationPrincipal injects it directly into the method parameter.
- * This works because JwtAuthFilter calls:
- *   SecurityContextHolder.getContext().setAuthentication(
- *       new UsernamePasswordAuthenticationToken(userDetails, null, authorities)
- *   )
- * And UserDetailsServiceImpl returns our User entity (which implements UserDetails).
- * So @AuthenticationPrincipal gives us the full User object — no DB lookup needed.
+ * CHANGE in v2.0 (production hardening):
  *
- * MENTOR NOTE — Role checking pattern:
- * actor.getAuthorities() returns ["ROLE_ADMIN", "ROLE_USER"].
- * We check isAdmin by looking for "ROLE_ADMIN" in that collection.
- * This is safe because roles come from the JWT → DB → SecurityContext chain,
- * not from anything the client sends.
+ *   • Every list endpoint now accepts page/size/sort and returns a
+ *     PageResponse instead of a bare array (see PageResponse for the
+ *     v1.3 "unbounded findAll()" finding this fixes).
  *
- * MENTOR NOTE — URL design:
- *   GET  /api/complaints           → list (student: own; admin: all)
- *   POST /api/complaints           → create new complaint
- *   GET  /api/complaints/{id}      → get single complaint
- *   PATCH /api/complaints/{id}/status → update status (admin only)
- *   DELETE /api/complaints/{id}    → soft-delete
- *   GET  /api/complaints/stats     → dashboard statistics
+ *   • New queue + assignment endpoints power the STAFF workflow: a staff
+ *     member browses /queue/unassigned, self-assigns via /{id}/assign/me,
+ *     works the complaint, and updates its status — all gated so a STAFF
+ *     user can only act on complaints actually assigned to them (enforced
+ *     in ComplaintService.assertCanManage). /{id}/assign lets an ADMIN
+ *     assign a complaint to a specific staff/admin user directly.
  *
- * We use PATCH (not PUT) for status update because we're changing part of
- * the resource, not replacing it entirely. This follows REST semantics.
+ *   • Local @ExceptionHandler methods removed — GlobalExceptionHandler now
+ *     handles IllegalStateException (409, illegal status transition) and
+ *     every other exception type centrally. v1.3's report explicitly
+ *     flagged duplicated exception handling between controllers and
+ *     GlobalExceptionHandler as a Maintainability issue.
  */
 @RestController
 @RequestMapping("/api/complaints")
@@ -55,108 +48,130 @@ public class ComplaintController {
     private final ComplaintService complaintService;
     private final UserRepository   userRepository;
 
-    // ── POST /api/complaints ───────────────────────────────────────────────
-
     @PostMapping
     public ResponseEntity<ComplaintResponse> create(
             @Valid @RequestBody CreateComplaintRequest req,
             @AuthenticationPrincipal User actor) {
-
-        ComplaintResponse res = complaintService.createComplaint(req, actor);
-        return ResponseEntity.status(HttpStatus.CREATED).body(res);
+        return ResponseEntity.status(HttpStatus.CREATED).body(complaintService.createComplaint(req, actor));
     }
 
-    // ── GET /api/complaints ────────────────────────────────────────────────
-
+    /**
+     * GET /api/complaints — scoped by role:
+     *   USER  → their own complaints only
+     *   STAFF → complaints currently assigned to them (use /queue/unassigned for the pick-up pool)
+     *   ADMIN → every complaint, optionally filtered by status/search
+     */
     @GetMapping
-    public ResponseEntity<List<ComplaintResponse>> list(
-            @AuthenticationPrincipal User actor) {
+    public ResponseEntity<PageResponse<ComplaintResponse>> list(
+            @AuthenticationPrincipal User actor,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String q,
+            @PageableDefault(size = 20) Pageable pageable) {
 
-        boolean admin = isAdmin(actor);
-        List<ComplaintResponse> list = admin
-                ? complaintService.getAllComplaints()
-                : complaintService.getMyComplaints(actor);
+        Pageable sorted = defaultSort(pageable);
+        Complaint.Status statusEnum = parseStatus(status);
 
-        return ResponseEntity.ok(list);
+        if (isAdmin(actor)) {
+            return ResponseEntity.ok(toPageResponse(complaintService.getAllComplaints(sorted, statusEnum, q)));
+        }
+        if (isStaff(actor)) {
+            return ResponseEntity.ok(toPageResponse(complaintService.getMyQueue(actor, sorted, statusEnum)));
+        }
+        return ResponseEntity.ok(toPageResponse(complaintService.getMyComplaints(actor, sorted, statusEnum)));
     }
-
-    // ── GET /api/complaints/{id} ───────────────────────────────────────────
 
     @GetMapping("/{id}")
-    public ResponseEntity<ComplaintResponse> get(
-            @PathVariable Long id,
-            @AuthenticationPrincipal User actor) {
-
-        ComplaintResponse res = complaintService.getComplaint(id, actor, isAdmin(actor));
-        return ResponseEntity.ok(res);
+    public ResponseEntity<ComplaintResponse> get(@PathVariable Long id, @AuthenticationPrincipal User actor) {
+        return ResponseEntity.ok(complaintService.getComplaint(id, actor));
     }
 
-    // ── PATCH /api/complaints/{id}/status (admin only) ────────────────────
+    @GetMapping("/{id}/history")
+    public ResponseEntity<ComplaintHistoryResponse> history(@PathVariable Long id, @AuthenticationPrincipal User actor) {
+        return ResponseEntity.ok(complaintService.getHistory(id, actor));
+    }
 
     @PatchMapping("/{id}/status")
     public ResponseEntity<ComplaintResponse> updateStatus(
             @PathVariable Long id,
             @Valid @RequestBody UpdateStatusRequest req,
             @AuthenticationPrincipal User actor) {
-
-        if (!isAdmin(actor)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .build();
-        }
-        ComplaintResponse res = complaintService.updateStatus(id, req, actor);
-        return ResponseEntity.ok(res);
+        return ResponseEntity.ok(complaintService.updateStatus(id, req, actor, isAdmin(actor)));
     }
 
-    // ── DELETE /api/complaints/{id} ───────────────────────────────────────
-
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(
-            @PathVariable Long id,
-            @AuthenticationPrincipal User actor) {
-
+    public ResponseEntity<Void> delete(@PathVariable Long id, @AuthenticationPrincipal User actor) {
         complaintService.deleteComplaint(id, actor, isAdmin(actor));
         return ResponseEntity.noContent().build();
     }
 
-    // ── GET /api/complaints/stats ──────────────────────────────────────────
-
     @GetMapping("/stats")
-    public ResponseEntity<DashboardStats> stats(
-            @AuthenticationPrincipal User actor) {
-
+    public ResponseEntity<DashboardStats> stats(@AuthenticationPrincipal User actor) {
         boolean admin = isAdmin(actor);
+        boolean staff = isStaff(actor);
         long totalUsers = admin ? userRepository.count() : 0;
-        DashboardStats stats = complaintService.getDashboardStats(actor, admin, totalUsers);
-        return ResponseEntity.ok(stats);
+        return ResponseEntity.ok(complaintService.getDashboardStats(actor, admin, staff, totalUsers));
     }
 
-    // ── Exception handlers ────────────────────────────────────────────────
+    // ── Queue + assignment (STAFF / ADMIN) ─────────────────────────────────
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<Map<String, String>> handleValidation(
-            MethodArgumentNotValidException ex) {
-        Map<String, String> errors = new HashMap<>();
-        ex.getBindingResult().getFieldErrors()
-                .forEach(e -> errors.put(e.getField(), e.getDefaultMessage()));
-        return ResponseEntity.badRequest().body(errors);
+    @PreAuthorize("hasAnyRole('STAFF','ADMIN')")
+    @GetMapping("/queue/unassigned")
+    public ResponseEntity<PageResponse<ComplaintResponse>> unassignedQueue(@PageableDefault(size = 20) Pageable pageable) {
+        return ResponseEntity.ok(toPageResponse(complaintService.getUnassignedQueue(defaultSort(pageable))));
     }
 
-    @ExceptionHandler(EntityNotFoundException.class)
-    public ResponseEntity<Map<String, String>> handleNotFound(EntityNotFoundException ex) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(Map.of("message", ex.getMessage()));
+    @PreAuthorize("hasAnyRole('STAFF','ADMIN')")
+    @GetMapping("/queue/mine")
+    public ResponseEntity<PageResponse<ComplaintResponse>> myQueue(
+            @AuthenticationPrincipal User actor,
+            @RequestParam(required = false) String status,
+            @PageableDefault(size = 20) Pageable pageable) {
+        return ResponseEntity.ok(toPageResponse(
+                complaintService.getMyQueue(actor, defaultSort(pageable), parseStatus(status))));
     }
 
-    @ExceptionHandler(AccessDeniedException.class)
-    public ResponseEntity<Map<String, String>> handleAccessDenied(AccessDeniedException ex) {
-        return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(Map.of("message", ex.getMessage()));
+    @PreAuthorize("hasAnyRole('STAFF','ADMIN')")
+    @PostMapping("/{id}/assign/me")
+    public ResponseEntity<ComplaintResponse> selfAssign(@PathVariable Long id, @AuthenticationPrincipal User actor) {
+        return ResponseEntity.ok(complaintService.selfAssign(id, actor));
     }
 
-    // ── Helper ────────────────────────────────────────────────────────────
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/{id}/assign")
+    public ResponseEntity<ComplaintResponse> assign(
+            @PathVariable Long id,
+            @Valid @RequestBody AssignComplaintRequest req,
+            @AuthenticationPrincipal User actor) {
+        return ResponseEntity.ok(complaintService.assignTo(id, req.getAssigneeId(), actor));
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    private Pageable defaultSort(Pageable pageable) {
+        if (pageable.getSort().isUnsorted()) {
+            return PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), Sort.by("submittedAt").descending());
+        }
+        return pageable;
+    }
+
+    private Complaint.Status parseStatus(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Complaint.Status.valueOf(raw.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private PageResponse<ComplaintResponse> toPageResponse(org.springframework.data.domain.Page<ComplaintResponse> page) {
+        return PageResponse.of(page, c -> c);
+    }
 
     private boolean isAdmin(User user) {
-        return user.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+        return user.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+    }
+
+    private boolean isStaff(User user) {
+        return user.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("ROLE_STAFF"));
     }
 }

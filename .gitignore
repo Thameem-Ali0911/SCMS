@@ -1,0 +1,40 @@
+# ── Build artifacts ───────────────────────────────────────────────────────
+# MENTOR NOTE — fixing the v1.3 finding: "Build artifacts committed —
+# target/ in version control... every developer clones a stale build."
+backend/target/
+frontend/dist/
+frontend/build/
+*.class
+*.jar
+*.war
+
+# ── Dependencies ──────────────────────────────────────────────────────────
+node_modules/
+.npm-global/
+
+# ── Environment / secrets ──────────────────────────────────────────────────
+.env
+.env.local
+*.pem
+*.key
+
+# ── IDE ───────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# ── OS ────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Test / coverage output ─────────────────────────────────────────────────
+backend/target/surefire-reports/
+coverage/
+.nyc_output/

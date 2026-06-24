@@ -1,231 +1,164 @@
 package com.scms.controller;
 
 import com.scms.dto.AdminDtos.*;
+import com.scms.dto.CategoryDtos.CategoryRequest;
+import com.scms.dto.CategoryDtos.CategoryResponse;
+import com.scms.dto.PageResponse;
 import com.scms.model.User;
-import com.scms.service.AdminService;
-import jakarta.persistence.EntityNotFoundException;
+import com.scms.service.*;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.*;
-import org.springframework.security.access.AccessDeniedException;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * AdminController — HTTP layer for all admin-only operations.
  *
- * MENTOR NOTE — Security layers:
- * 1. SecurityConfig permits ALL authenticated requests to /api/admin/**
- * 2. Each method here calls isAdmin(actor) and returns 403 if not.
- * 3. AdminService also enforces the rules — two-layer defence-in-depth.
+ * CHANGE in v2.0 (production hardening):
  *
- * All endpoints under /api/admin/** are semantically "admin-only",
- * but we enforce it programmatically via role-check rather than
- * Spring Security's .hasRole("ADMIN") DSL so the error messages
- * are consistent and JSON-formatted like the rest of our API.
+ *   • @PreAuthorize("hasRole('ADMIN')") at the CLASS level replaces v1.3's
+ *     manual requireAdmin(actor) call at the top of every single method.
+ *     The report's exact words: "AdminController ignores Spring Security's
+ *     .hasRole('ADMIN') DSL and implements role checking manually in every
+ *     method — more verbose and error-prone than declarative security."
+ *     This is also enforced again at the URL level in SecurityConfig
+ *     (/api/admin/** → hasRole(ADMIN)) — defense in depth, but now BOTH
+ *     layers are declarative, not hand-written.
  *
- * Endpoints:
- *   GET    /api/admin/users              → list all users (pageable)
- *   GET    /api/admin/users/{id}         → get user detail
- *   PATCH  /api/admin/users/{id}/status  → activate / deactivate user
- *   PATCH  /api/admin/users/{id}/role    → change user role
- *   DELETE /api/admin/users/{id}         → soft-deactivate user
- *   GET    /api/admin/reports/summary    → aggregate complaint stats
- *   GET    /api/admin/reports/by-status  → breakdown by status
- *   GET    /api/admin/reports/by-category→ breakdown by category
- *   GET    /api/admin/reports/by-user    → top complainants
- *   GET    /api/admin/reports/timeline   → daily complaint count (last 30d)
+ *   • Delegates to four focused services (AdminUserService,
+ *     AdminReportService, AdminAssignmentService, CategoryService) instead
+ *     of one 16KB god-class — see each service's javadoc for what moved
+ *     where and why.
+ *
+ *   • New: GET /api/admin/staff (workload), POST /api/admin/categories
+ *     (category CRUD) — the assignment workflow and category-reference-table
+ *     fixes this version adds.
+ *
+ *   • Local @ExceptionHandler methods removed (duplicated GlobalExceptionHandler).
  */
 @RestController
 @RequestMapping("/api/admin")
 @RequiredArgsConstructor
+@PreAuthorize("hasRole('ADMIN')")
 public class AdminController {
 
-    private final AdminService adminService;
+    private final AdminUserService       adminUserService;
+    private final AdminReportService     adminReportService;
+    private final AdminAssignmentService adminAssignmentService;
+    private final CategoryService        categoryService;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    //  USER MANAGEMENT
-    // ═══════════════════════════════════════════════════════════════════════
+    // ── User management ──────────────────────────────────────────────────
 
-    /** GET /api/admin/users — list every registered user */
     @GetMapping("/users")
-    public ResponseEntity<List<UserResponse>> listUsers(
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        return ResponseEntity.ok(adminService.listAllUsers());
+    public ResponseEntity<PageResponse<UserResponse>> listUsers(
+            @RequestParam(required = false) String q,
+            @PageableDefault(size = 20) Pageable pageable) {
+        return ResponseEntity.ok(adminUserService.listAllUsers(pageable, q));
     }
 
-    /** GET /api/admin/users/{id} — get a single user's profile */
     @GetMapping("/users/{id}")
-    public ResponseEntity<UserResponse> getUser(
-            @PathVariable Long id,
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        return ResponseEntity.ok(adminService.getUserById(id));
+    public ResponseEntity<UserResponse> getUser(@PathVariable Long id) {
+        return ResponseEntity.ok(adminUserService.getUserById(id));
     }
 
-    /**
-     * PATCH /api/admin/users/{id}/status — toggle active/inactive.
-     * An inactive user's JWT is rejected at login time (isEnabled() → false).
-     * They cannot log in again until re-activated.
-     */
     @PatchMapping("/users/{id}/status")
     public ResponseEntity<UserResponse> toggleUserStatus(
             @PathVariable Long id,
             @Valid @RequestBody ToggleUserStatusRequest req,
             @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        // Prevent admin from deactivating themselves
         if (id.equals(actor.getId())) {
-            return ResponseEntity.badRequest()
-                    .build();
+            throw new IllegalArgumentException("You cannot deactivate your own account.");
         }
-        return ResponseEntity.ok(adminService.toggleUserStatus(id, req.isActive(), actor));
+        return ResponseEntity.ok(adminUserService.toggleUserStatus(id, req.getActive(), actor));
     }
 
-    /**
-     * PATCH /api/admin/users/{id}/role — promote USER → ADMIN or demote ADMIN → USER.
-     * Prevents self-demotion so there is always at least one admin.
-     */
     @PatchMapping("/users/{id}/role")
     public ResponseEntity<UserResponse> changeUserRole(
             @PathVariable Long id,
             @Valid @RequestBody ChangeRoleRequest req,
             @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
         if (id.equals(actor.getId())) {
-            return ResponseEntity.badRequest()
-                    .build();
+            throw new IllegalArgumentException("You cannot change your own role.");
         }
-        return ResponseEntity.ok(adminService.changeUserRole(id, req.getRole(), actor));
+        return ResponseEntity.ok(adminUserService.changeUserRole(id, req.getRole(), actor));
     }
 
-    /**
-     * DELETE /api/admin/users/{id} — deactivate (soft-disable) a user account.
-     * We never hard-delete users — their complaints must remain traceable.
-     */
     @DeleteMapping("/users/{id}")
-    public ResponseEntity<Void> deactivateUser(
-            @PathVariable Long id,
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
+    public ResponseEntity<Void> deactivateUser(@PathVariable Long id, @AuthenticationPrincipal User actor) {
         if (id.equals(actor.getId())) {
-            return ResponseEntity.badRequest().build();
+            throw new IllegalArgumentException("You cannot deactivate your own account.");
         }
-        adminService.deactivateUser(id, actor);
+        adminUserService.deactivateUser(id, actor);
         return ResponseEntity.noContent().build();
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    //  REPORTS
-    // ═══════════════════════════════════════════════════════════════════════
+    // ── Reports ──────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/admin/reports/summary — top-level KPIs for the report dashboard.
-     * Returns total users, total complaints, avg resolution time, etc.
-     */
     @GetMapping("/reports/summary")
-    public ResponseEntity<ReportSummary> reportSummary(
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        return ResponseEntity.ok(adminService.getReportSummary());
+    public ResponseEntity<ReportSummary> reportSummary() {
+        return ResponseEntity.ok(adminReportService.getReportSummary());
     }
 
-    /**
-     * GET /api/admin/reports/by-status — complaint count per status.
-     * Used to render the pie / donut chart on the Reports page.
-     */
     @GetMapping("/reports/by-status")
-    public ResponseEntity<List<StatusBreakdown>> reportByStatus(
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        return ResponseEntity.ok(adminService.getStatusBreakdown());
+    public ResponseEntity<List<StatusBreakdown>> reportByStatus() {
+        return ResponseEntity.ok(adminReportService.getStatusBreakdown());
     }
 
-    /**
-     * GET /api/admin/reports/by-category — complaint count per category.
-     * Used to render the bar chart.
-     */
     @GetMapping("/reports/by-category")
-    public ResponseEntity<List<CategoryBreakdown>> reportByCategory(
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        return ResponseEntity.ok(adminService.getCategoryBreakdown());
+    public ResponseEntity<List<CategoryBreakdown>> reportByCategory() {
+        return ResponseEntity.ok(adminReportService.getCategoryBreakdown());
     }
 
-    /**
-     * GET /api/admin/reports/by-user — top 10 users by complaint volume.
-     * Useful for spotting serial complainants or high-issue departments.
-     */
     @GetMapping("/reports/by-user")
-    public ResponseEntity<List<UserComplaintCount>> reportByUser(
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        return ResponseEntity.ok(adminService.getTopComplainants());
+    public ResponseEntity<List<UserComplaintCount>> reportByUser() {
+        return ResponseEntity.ok(adminReportService.getTopComplainants());
     }
 
-    /**
-     * GET /api/admin/reports/timeline — daily complaint count for the last 30 days.
-     * Used to render the line / area chart showing activity trends.
-     */
     @GetMapping("/reports/timeline")
-    public ResponseEntity<List<DailyCount>> reportTimeline(
-            @AuthenticationPrincipal User actor) {
-
-        requireAdmin(actor);
-        return ResponseEntity.ok(adminService.getDailyTimeline());
+    public ResponseEntity<List<DailyCount>> reportTimeline() {
+        return ResponseEntity.ok(adminReportService.getDailyTimeline());
     }
 
-    // ── Exception handlers ────────────────────────────────────────────────
+    // ── Staff assignment workflow ───────────────────────────────────────
+    // NOTE: assigning a complaint to a staff member is POST
+    // /api/complaints/{id}/assign (in ComplaintController, @PreAuthorize
+    // "hasRole('ADMIN')") rather than duplicated here — one endpoint, one
+    // owner, consistent with the rest of the v2.0 cleanup that removed
+    // duplicated logic between controllers.
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<Map<String, String>> handleValidation(
-            MethodArgumentNotValidException ex) {
-        Map<String, String> errors = new HashMap<>();
-        ex.getBindingResult().getFieldErrors()
-                .forEach(e -> errors.put(e.getField(), e.getDefaultMessage()));
-        return ResponseEntity.badRequest().body(errors);
+    @GetMapping("/staff")
+    public ResponseEntity<List<StaffWorkload>> staffWorkload() {
+        return ResponseEntity.ok(adminAssignmentService.getStaffWorkload());
     }
 
-    @ExceptionHandler(EntityNotFoundException.class)
-    public ResponseEntity<Map<String, String>> handleNotFound(EntityNotFoundException ex) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(Map.of("message", ex.getMessage()));
+
+    // ── Category management ─────────────────────────────────────────────
+
+    @GetMapping("/categories")
+    public ResponseEntity<List<CategoryResponse>> listAllCategories() {
+        return ResponseEntity.ok(categoryService.listAll());
     }
 
-    @ExceptionHandler(AccessDeniedException.class)
-    public ResponseEntity<Map<String, String>> handleAccessDenied(AccessDeniedException ex) {
-        return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(Map.of("message", ex.getMessage()));
+    @PostMapping("/categories")
+    public ResponseEntity<CategoryResponse> createCategory(@Valid @RequestBody CategoryRequest req) {
+        return ResponseEntity.ok(categoryService.create(req));
     }
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<Map<String, String>> handleIllegalArg(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest()
-                .body(Map.of("message", ex.getMessage()));
+    @PutMapping("/categories/{id}")
+    public ResponseEntity<CategoryResponse> updateCategory(
+            @PathVariable Long id, @Valid @RequestBody CategoryRequest req) {
+        return ResponseEntity.ok(categoryService.update(id, req));
     }
 
-    // ── Guard helper ──────────────────────────────────────────────────────
-
-    private void requireAdmin(User user) {
-        boolean admin = user.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
-        if (!admin) {
-            throw new AccessDeniedException("This endpoint is restricted to administrators.");
-        }
+    @PatchMapping("/categories/{id}/active")
+    public ResponseEntity<CategoryResponse> setCategoryActive(
+            @PathVariable Long id, @RequestParam boolean active) {
+        return ResponseEntity.ok(categoryService.setActive(id, active));
     }
 }

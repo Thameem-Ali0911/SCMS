@@ -10,7 +10,6 @@ import React from 'react'
   No logic changes needed anywhere else.
 */
 const STATUS_META = {
-  DRAFT:       { label: 'Draft',       cls: 'badge-slate'  },
   SUBMITTED:   { label: 'Submitted',   cls: 'badge-blue'   },
   IN_REVIEW:   { label: 'In Review',   cls: 'badge-indigo' },
   IN_PROGRESS: { label: 'In Progress', cls: 'badge-amber'  },
@@ -79,5 +78,46 @@ export function EmptyState({ message = 'Nothing here yet.', action }) {
 export function Spinner({ size = 20 }) {
   return (
     <span className="spinner" style={{ width: size, height: size }} aria-label="Loading" />
+  )
+}
+
+/*
+  Pagination — drives the PageResponse envelope (content/page/size/
+  totalElements/totalPages/last) every list endpoint returns in v2.0.
+  Fixes the v1.3 "no pagination" finding — see PageResponse.java.
+
+  Props: page (0-indexed), totalPages, totalElements, onPageChange
+*/
+export function Pagination({ page, totalPages, totalElements, onPageChange }) {
+  if (totalPages <= 1) return null
+
+  const isFirst = page === 0
+  const isLast  = page >= totalPages - 1
+
+  return (
+    <div className="pagination">
+      <span className="pagination-info">
+        {totalElements} total result{totalElements === 1 ? '' : 's'}
+      </span>
+      <div className="pagination-controls">
+        <button
+          className="pagination-btn"
+          onClick={() => onPageChange(page - 1)}
+          disabled={isFirst}
+          aria-label="Previous page"
+        >
+          Previous
+        </button>
+        <span className="pagination-page">Page {page + 1} of {totalPages}</span>
+        <button
+          className="pagination-btn"
+          onClick={() => onPageChange(page + 1)}
+          disabled={isLast}
+          aria-label="Next page"
+        >
+          Next
+        </button>
+      </div>
+    </div>
   )
 }

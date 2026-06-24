@@ -15,29 +15,41 @@ import java.util.stream.Collectors;
 /**
  * User — JPA entity for the `users` table, also implements UserDetails.
  *
- * MENTOR NOTE — WHY implement UserDetails? Spring Security's authentication
- * pipeline calls loadUserByUsername() on your UserDetailsService, which must
- * return a UserDetails object. By making User implement UserDetails directly,
- * we skip writing an adapter class. Spring Security can then call
- * getPassword(), getAuthorities(), isEnabled() directly on our User object —
- * clean and zero-overhead.
+ * CHANGE in v2.0 (production hardening):
  *
- * Lombok annotations:
+ *   • failedLoginAttempts / accountLockedUntil — account-level brute-force
+ *     lockout now lives on the entity itself, so isAccountNonLocked() reads
+ *     real state instead of hardcoding `true`. v1.3 tracked lockout in a
+ *     side-table (an in-memory map) that Spring Security's authentication
+ *     pipeline never actually consulted — meaning if anything ever called
+ *     AuthenticationManager.authenticate() directly (bypassing AuthService's
+ *     manual pre-check), the lockout was silently bypassed. Now the lock is
+ *     enforced by the UserDetails contract itself — there is no bypass path.
  *
- * @Data → generates getters, setters, equals, hashCode, toString
- * @Builder → User.builder().email("x").password("h").build()
- * @NoArgsConstructor → required by JPA (it instantiates entities with no-arg
- * constructor)
- * @AllArgsConstructor → required by @Builder when combined with
- * @NoArgsConstructor
+ *   • tokenVersion — incremented on logout / explicit "sign out everywhere".
+ *     Every issued JWT embeds the tokenVersion that was current at issue
+ *     time; JwtAuthFilter rejects any token whose embedded version doesn't
+ *     match the current DB value. This is how v2.0 supports real token
+ *     revocation without maintaining a separate blacklist table of every
+ *     token ever issued — see JwtUtil and JwtAuthFilter.
+ *
+ *   • @Table(indexes = …) on email — v1.3 already had a unique constraint
+ *     (which MySQL backs with an index automatically), so this is mostly
+ *     documentation of that fact, kept explicit for clarity alongside the
+ *     other entities that now declare indexes.
  */
 @Entity
-@Table(name = "users")
+@Table(name = "users", indexes = {
+        @Index(name = "idx_users_email", columnList = "email")
+})
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class User implements UserDetails {
+
+    public static final int MAX_FAILED_ATTEMPTS = 5;
+    public static final int LOCKOUT_MINUTES     = 15;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -49,16 +61,11 @@ public class User implements UserDetails {
     @Column(name = "last_name", nullable = false, length = 50)
     private String lastName;
 
-    /**
-     * Email is the login identifier (username). Must be unique.
-     */
+    /** Email is the login identifier (username). Must be unique. */
     @Column(nullable = false, unique = true, length = 100)
     private String email;
 
-    /**
-     * Stored as a BCrypt hash — NEVER plain text. Named "password" to satisfy
-     * the UserDetails contract (getPassword()).
-     */
+    /** Stored as a BCrypt hash — NEVER plain text. */
     @Column(name = "password_hash", nullable = false)
     private String password;
 
@@ -72,11 +79,29 @@ public class User implements UserDetails {
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
+    // ── Account-level brute-force lockout (v2.0) ───────────────────────────
+
+    @Builder.Default
+    @Column(name = "failed_login_attempts", nullable = false)
+    private int failedLoginAttempts = 0;
+
+    @Column(name = "account_locked_until")
+    private LocalDateTime accountLockedUntil;
+
+    // ── Token revocation (v2.0) ─────────────────────────────────────────────
+
+    /**
+     * Incremented whenever the user logs out (or an admin force-revokes their
+     * sessions). Every JWT carries the tokenVersion that was valid when it was
+     * issued; a mismatch at validation time means "this token was logged out
+     * after being issued" → reject it, even though it hasn't expired yet.
+     */
+    @Builder.Default
+    @Column(name = "token_version", nullable = false)
+    private int tokenVersion = 0;
+
     /**
      * Roles — Many-to-Many with the `roles` table via `user_roles` join table.
-     * EAGER fetch: roles are always loaded with the user in one query. In
-     * Spring Boot this is safe because the User object only lives for the
-     * duration of one HTTP request (stateless JWT — no persistent session).
      */
     @Builder.Default
     @ManyToMany(fetch = FetchType.EAGER)
@@ -93,26 +118,17 @@ public class User implements UserDetails {
     }
 
     // ─── UserDetails interface ─────────────────────────────────────────────
-    /**
-     * Spring Security uses this to check passwords during login.
-     */
+
     @Override
     public String getPassword() {
         return password;
     }
 
-    /**
-     * Our "username" is the email address.
-     */
     @Override
     public String getUsername() {
         return email;
     }
 
-    /**
-     * Converts Role entities to Spring Security GrantedAuthority objects.
-     * "ADMIN" in DB → "ROLE_ADMIN" authority → .hasRole("ADMIN") works.
-     */
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
         return roles.stream()
@@ -125,9 +141,15 @@ public class User implements UserDetails {
         return true;
     }
 
+    /**
+     * CHANGE in v2.0: now reads real lockout state instead of always
+     * returning true. A lock that has expired is treated as unlocked even
+     * if accountLockedUntil hasn't been cleared yet — LoginAttemptService
+     * clears it lazily on the next login attempt.
+     */
     @Override
     public boolean isAccountNonLocked() {
-        return true;
+        return accountLockedUntil == null || LocalDateTime.now().isAfter(accountLockedUntil);
     }
 
     @Override
@@ -140,7 +162,12 @@ public class User implements UserDetails {
         return active;
     }
 
-    // ─── Helpers ───────────────────────────────────────────────────────────
+    // ─── Role helpers ──────────────────────────────────────────────────────
+
+    public boolean hasRole(String roleName) {
+        return roles.stream().anyMatch(r -> r.getName().equalsIgnoreCase(roleName));
+    }
+
     public String getFullName() {
         return firstName + " " + lastName;
     }

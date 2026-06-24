@@ -1,11 +1,13 @@
 /* ───────────────────────────────────────────────────────────────────────────
-   global.css — SCMS Design System v1.3  (Production Hardening)
+   global.css — SCMS Design System v2.0  (Production Hardening)
 
-   New in v1.3:
-     • @keyframes toastIn — slide-in animation for toast notifications
-     • .alert-warning — amber warning banner (lockout state in LoginPage)
-     • Minor alignment fixes found while building new components
-   All original classes preserved intact.
+   New in v2.0:
+     • Working mobile navigation — off-canvas drawer + backdrop, replacing
+       v1.3's `.sidebar { display:none; }` (which left phones with NO way
+       to navigate at all).
+     • :focus-visible styling + prefers-reduced-motion support.
+     • Pagination, role-select, and staff-workload component styles.
+   All v1.3 classes preserved intact unless noted above.
 ─────────────────────────────────────────────────────────────────────────── */
 
 *,
@@ -188,7 +190,11 @@ body {
 .sidebar-brand { display:flex;align-items:center;gap:.625rem;padding:1.5rem 1.25rem 1rem; }
 .sidebar-brand-mark { width:32px;height:32px;background:var(--indigo);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0; }
 .sidebar-brand-mark svg { width:18px;height:18px; }
-.sidebar-brand-name { font-family:var(--ff-display);font-weight:700;font-size:1.05rem;color:#fff;letter-spacing:.02em; }
+.sidebar-brand-name { font-family:var(--ff-display);font-weight:700;font-size:1.05rem;color:#fff;letter-spacing:.02em;flex:1; }
+.sidebar-close-btn { display:none;background:none;border:none;padding:.3rem;color:rgba(255,255,255,.6);cursor:pointer;border-radius:var(--radius-sm); }
+.sidebar-close-btn:hover { background:rgba(255,255,255,.08);color:#fff; }
+.sidebar-close-btn svg { width:18px;height:18px; }
+.sidebar-backdrop { display:none; }
 .sidebar-role-badge { margin:0 1.25rem .75rem;padding:.2rem .6rem;background:rgba(79,70,229,.3);border:1px solid rgba(99,102,241,.4);border-radius:100px;font-size:.7rem;font-weight:600;color:#a5b4fc;text-transform:uppercase;letter-spacing:.06em;width:fit-content; }
 .sidebar-nav { flex:1;padding:.5rem .75rem;display:flex;flex-direction:column;gap:2px; }
 .sidebar-section-label { font-size:.65rem;font-weight:600;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.08em;padding:.5rem .5rem .25rem; }
@@ -205,6 +211,10 @@ body {
 .sidebar-logout { display:flex;align-items:center;gap:.5rem;width:100%;padding:.45rem .75rem;border-radius:var(--radius-sm);background:transparent;border:none;color:rgba(255,255,255,.5);font-size:.8rem;cursor:pointer;transition:background .15s,color .15s;text-align:left; }
 .sidebar-logout:hover { background:rgba(239,68,68,.15);color:#fca5a5; }
 .navbar { display:flex;align-items:center;justify-content:space-between;padding:1rem 2rem;background:var(--white);border-bottom:1px solid var(--slate-2);position:sticky;top:0;z-index:10; }
+.navbar-left { display:flex;align-items:center;gap:.75rem; }
+.navbar-menu-btn { display:none;background:none;border:none;padding:.4rem;margin:-.4rem 0 -.4rem -.4rem;border-radius:var(--radius-sm);color:var(--slate-7);cursor:pointer;align-items:center;justify-content:center; }
+.navbar-menu-btn svg { width:22px;height:22px; }
+.navbar-menu-btn:hover { background:var(--slate-1); }
 .navbar-title { font-family:var(--ff-display);font-size:1rem;font-weight:600;color:var(--slate-7); }
 .navbar-right { display:flex;align-items:center;gap:.75rem; }
 .shell-main { flex:1;display:flex;flex-direction:column;min-width:0; }
@@ -349,6 +359,59 @@ body {
 .link-subtle:hover { color:var(--indigo); }
 
 /* ═══════════════════════════════════════════════════════════════════
+   ACCESSIBILITY — focus visibility & reduced motion
+   CHANGE in v2.0: v1.3 had no :focus-visible styling at all (keyboard
+   users got no visual indication of focus on most custom controls) and
+   no respect for prefers-reduced-motion (animations like meshShift/
+   toastIn ran unconditionally even for users who've asked their OS to
+   minimise motion).
+═══════════════════════════════════════════════════════════════════ */
+:focus-visible {
+  outline: 2px solid var(--indigo);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.sidebar-link:focus-visible,
+.sidebar-logout:focus-visible {
+  outline-color: #A5B4FC;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PAGINATION
+═══════════════════════════════════════════════════════════════════ */
+.pagination { display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 1.25rem;flex-wrap:wrap; }
+.pagination-info { font-size:.8rem;color:var(--slate-6); }
+.pagination-controls { display:flex;align-items:center;gap:.5rem; }
+.pagination-btn { padding:.4rem .8rem;border-radius:var(--radius-sm);font-size:.8rem;font-weight:600;border:1px solid var(--slate-2);background:var(--white);color:var(--slate-7);cursor:pointer;transition:background .12s; }
+.pagination-btn:hover:not(:disabled) { background:var(--slate-1); }
+.pagination-btn:disabled { opacity:.45;cursor:not-allowed; }
+.pagination-page { font-size:.8rem;color:var(--slate-6);font-weight:600;padding:0 .25rem; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   ROLE / ASSIGNMENT CONTROLS  (AdminUsers 3-way role select, Assignments page)
+═══════════════════════════════════════════════════════════════════ */
+.role-select { padding:.35rem .6rem;border-radius:var(--radius-sm);border:1px solid var(--slate-2);background:var(--white);color:var(--slate-7);font-size:.78rem;font-weight:600;cursor:pointer; }
+.role-select:focus-visible { outline:2px solid var(--indigo);outline-offset:1px; }
+.workload-card { display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.85rem 1.1rem;border-bottom:1px solid var(--slate-2); }
+.workload-card:last-child { border-bottom:none; }
+.workload-name { font-size:.85rem;font-weight:600;color:var(--slate-7); }
+.workload-email { font-size:.72rem;color:var(--slate-4); }
+.workload-counts { display:flex;gap:.5rem;align-items:center;flex-shrink:0; }
+.priority-pill { font-size:.68rem;font-weight:700;padding:.15rem .5rem;border-radius:100px;text-transform:uppercase;letter-spacing:.04em; }
+.priority-critical { background:#FEE2E2;color:#991B1B; }
+.priority-high     { background:#FFEDD5;color:#9A3412; }
+.priority-medium   { background:#FEF3C7;color:#92400E; }
+.priority-low      { background:var(--slate-2);color:var(--slate-6); }
+
+/* ═══════════════════════════════════════════════════════════════════
    RESPONSIVE
 ═══════════════════════════════════════════════════════════════════ */
 @media (max-width:860px) {
@@ -359,13 +422,56 @@ body {
   .auth-form-panel { padding:2rem 1.25rem 3rem; }
   .detail-layout { grid-template-columns:1fr; }
 }
+/*
+  CHANGE in v2.0 — fixing a genuinely broken mobile experience:
+  v1.3 had `.sidebar { display:none; }` here with NO replacement
+  navigation — once the sidebar disappeared below 680px, there was no way
+  to navigate the app at all on a phone. The sidebar is now an off-canvas
+  drawer: fixed position, transformed off-screen by default, and slid into
+  view via the .sidebar-open class (toggled by SidebarContext through the
+  hamburger button in Navbar). The backdrop dims the page and closes the
+  drawer on tap; Escape does the same (see SidebarContext.jsx).
+*/
 @media (max-width:680px) {
-  .sidebar { display:none; }
+  .navbar-menu-btn { display:flex; }
+  .sidebar-close-btn { display:flex; }
+
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    height: 100vh;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar-open { transform: translateX(0); }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15,25,35,.5);
+    z-index: 40;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  .sidebar-backdrop-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .page-content { padding:1rem; }
+  .navbar { padding:.875rem 1rem; }
   .stat-grid { grid-template-columns:1fr 1fr; }
+  .pagination { flex-direction:column;align-items:stretch; }
 }
 @media (max-width:480px) {
   .field-row { grid-template-columns:1fr; }
   .auth-brand { padding:1.5rem; }
   .form-title { font-size:1.4rem; }
+  .stat-grid { grid-template-columns:1fr; }
+  .toolbar { flex-direction:column;align-items:stretch; }
+  .search-input { max-width:none; }
 }

@@ -3,107 +3,150 @@ import axios from 'axios'
 /*
   axios.js — single axios instance + interceptors.
 
-  CHANGE in v1.3 (Production hardening):
+  CHANGE in v2.0 (production hardening):
 
-  Two interceptors added:
+  ── In-memory access token, not localStorage-read-per-request ──────────────
+  setAccessToken()/getAccessToken() hold the token in a module-level
+  variable. AuthContext calls setAccessToken() on login/refresh/logout. This
+  avoids re-parsing localStorage JSON on every single API call (minor), and
+  more importantly gives the refresh-on-401 interceptor below a single
+  source of truth it can update immediately after a silent refresh, before
+  AuthContext's React state has even re-rendered.
 
-  ── REQUEST interceptor ──────────────────────────────────────────────────────
-  Injects the JWT Authorization header on every request.
-  Previously this was only set on login and re-read from localStorage on
-  page reload. The interceptor ensures it's ALWAYS present, even if a
-  component constructs a new axios instance, forgets to set the header,
-  or the token was rotated.
+  ── withCredentials: true ────────────────────────────────────────────────────
+  Required so the browser attaches the HttpOnly refresh-token cookie
+  (scms_refresh, Path=/api/auth) to /api/auth/refresh and /api/auth/logout
+  calls. See SecurityConfig.java's CORS configuration (allowCredentials)
+  and AuthController.java for the cookie itself.
 
-  ── RESPONSE interceptor ─────────────────────────────────────────────────────
-  Handles error responses globally:
+  ── Silent refresh on 401, with request queueing ───────────────────────────
+  When an access token expires mid-session, the FIRST request that gets a
+  401 triggers exactly one POST /auth/refresh call. Any OTHER requests that
+  fail with 401 while that refresh is in flight are queued and retried
+  automatically once the new access token arrives, instead of each firing
+  its own redundant refresh call (which would race and potentially rotate
+  the refresh cookie out from under each other).
 
-    401 Unauthorized → JWT expired or invalid. Clear auth, redirect to /login.
-        This is the most important interceptor: without it, a user with an
-        expired token sees API calls silently fail with no explanation. With it,
-        they're redirected to login automatically.
+  If the refresh itself fails (refresh token expired/revoked too), every
+  queued request is rejected, local auth state is cleared, and the user is
+  redirected to /login?expired=true — same UX as v1.3's immediate-401
+  redirect, just one refresh attempt later.
 
-    429 Too Many Requests → Rate limit hit (brute force protection).
-        Show a specific "locked out" message, not the generic error.
-
-    All other errors → Extract error.response.data.message (our standard envelope)
-        and fire a toast notification. Components no longer need try/catch just
-        to show error messages — the interceptor handles it globally.
-
-  MENTOR NOTE — why a single axios instance?
-  If you use axios.get() (the global default) everywhere, you'd have to
-  configure the baseURL and interceptors in every file. One instance = one
-  configuration. Changing the API base URL in production? One line.
-
-  MENTOR NOTE — circular dependency risk:
-  Interceptors that import AuthContext or useNavigate run into circular
-  import problems in React. The workaround:
-    - Read/clear localStorage directly (no React context needed)
-    - Use window.location.href for redirect (no React Router needed)
-  This is intentional — interceptors live outside the React tree.
-
-  MENTOR NOTE — toast integration:
-  We fire a custom DOM event ('scms:toast') that the ToastContainer component
-  listens to. This avoids importing React state/context into this module.
-  The alternative (zustand store, event bus library) is cleaner in large apps
-  but overkill here.
+  MENTOR NOTE — circular dependency avoidance (carried over from v1.3):
+  This module intentionally does NOT import AuthContext or useNavigate —
+  it manipulates localStorage directly and uses window.location for the
+  final redirect. Interceptors live outside the React tree by design.
 */
+
+let accessToken = null
+
+export function setAccessToken(token) {
+  accessToken = token
+}
+
+export function getAccessToken() {
+  return accessToken
+}
 
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
   timeout: 15_000,
+  withCredentials: true,
 })
 
 // ── REQUEST interceptor ───────────────────────────────────────────────────────
 
 api.interceptors.request.use(
   (config) => {
-    try {
-      const stored = localStorage.getItem('scms_auth')
-      if (stored) {
-        const { token } = JSON.parse(stored)
-        if (token) {
-          config.headers['Authorization'] = `Bearer ${token}`
-        }
-      }
-    } catch {
-      // Corrupted localStorage — ignore, the 401 interceptor will clean up
+    if (accessToken) {
+      config.headers['Authorization'] = `Bearer ${accessToken}`
     }
     return config
   },
   (error) => Promise.reject(error)
 )
 
+// ── Refresh queueing state ────────────────────────────────────────────────────
+
+let isRefreshing = false
+let pendingQueue = [] // { resolve, reject, config }
+
+function resolveQueue(newToken) {
+  pendingQueue.forEach(({ resolve, config }) => {
+    config.headers['Authorization'] = `Bearer ${newToken}`
+    resolve(api(config))
+  })
+  pendingQueue = []
+}
+
+function rejectQueue(error) {
+  pendingQueue.forEach(({ reject }) => reject(error))
+  pendingQueue = []
+}
+
+function isAuthEndpoint(url = '') {
+  return url.includes('/auth/login') || url.includes('/auth/register') ||
+         url.includes('/auth/refresh') || url.includes('/auth/logout')
+}
+
+function clearSessionAndRedirect() {
+  setAccessToken(null)
+  localStorage.removeItem('scms_auth')
+  if (!window.location.pathname.includes('/login')) {
+    window.location.href = '/login?expired=true'
+  }
+}
+
 // ── RESPONSE interceptor ──────────────────────────────────────────────────────
 
 api.interceptors.response.use(
-  // Successful response — pass through unchanged
   (response) => response,
 
-  // Error response
-  (error) => {
-    const status  = error.response?.status
-    const message = error.response?.data?.message
+  async (error) => {
+    const status   = error.response?.status
+    const message  = error.response?.data?.message
+    const original = error.config
+
+    if (status === 401 && original && !isAuthEndpoint(original.url) && !original._retried) {
+      original._retried = true
+
+      if (isRefreshing) {
+        // A refresh is already in flight — queue this request behind it.
+        return new Promise((resolve, reject) => {
+          pendingQueue.push({ resolve, reject, config: original })
+        })
+      }
+
+      isRefreshing = true
+      try {
+        const { data } = await api.post('/auth/refresh')
+        setAccessToken(data.accessToken)
+        localStorage.setItem('scms_auth', JSON.stringify(data))
+        resolveQueue(data.accessToken)
+        original.headers['Authorization'] = `Bearer ${data.accessToken}`
+        return api(original)
+      } catch (refreshError) {
+        rejectQueue(refreshError)
+        clearSessionAndRedirect()
+        return Promise.reject(refreshError)
+      } finally {
+        isRefreshing = false
+      }
+    }
 
     if (status === 401) {
-      // JWT expired or invalid → log out and redirect to login
-      // Do NOT show a toast for this — the login page is the feedback.
-      localStorage.removeItem('scms_auth')
-      // Only redirect if we're not already on the login page
-      if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login?expired=true'
-      }
+      // Either the refresh endpoint itself failed, or we already retried once.
+      clearSessionAndRedirect()
       return Promise.reject(error)
     }
 
     if (status === 429) {
-      // Rate limiting / brute-force lockout — specific message
       fireToast(message ?? 'Too many attempts. Please wait and try again.', 'error')
       return Promise.reject(error)
     }
 
     if (status === 403) {
-      // Access denied — only toast if it's unexpected (not on the login page)
       if (!window.location.pathname.includes('/login')) {
         fireToast(message ?? 'You do not have permission to perform this action.', 'error')
       }
@@ -115,16 +158,13 @@ api.interceptors.response.use(
       return Promise.reject(error)
     }
 
-    // 400, 404, and other client errors — let the component handle them
-    // (they're usually validation errors that need inline display, not toasts)
+    // 400, 404, 409, and other client errors — let the component handle them
+    // (usually validation/conflict errors that need inline display, not toasts)
     return Promise.reject(error)
   }
 )
 
-/**
- * Fires a custom DOM event that ToastContainer listens to.
- * Decouples the axios module from React state.
- */
+/** Fires a custom DOM event that ToastContainer listens to. */
 function fireToast(message, type = 'error') {
   window.dispatchEvent(new CustomEvent('scms:toast', {
     detail: { message, type }

@@ -1,11 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
 import { complaintsApi } from '../api/complaints'
 import { useToast } from '../components/Toast'
 import Sidebar from '../components/Sidebar'
 import { Navbar, PageHeader, Footer } from '../components/Layout'
-import { StatusBadge, PriorityBadge, Spinner, EmptyState } from '../components/UI'
+import { StatusBadge, PriorityBadge, Spinner, EmptyState, Pagination } from '../components/UI'
 
 /*
   StaffQueue — a staff member's personal complaint workload view.
@@ -13,72 +12,72 @@ import { StatusBadge, PriorityBadge, Spinner, EmptyState } from '../components/U
   Available to: STAFF and ADMIN (StaffRoute in App.jsx)
 
   Two tabs:
-    "My Queue"      — complaints currently assigned to this staff member
-    "Unassigned"    — complaints with no assignee (pick-up queue)
+    "My Queue"    — complaints currently assigned to this staff member
+    "Unassigned"  — complaints with no assignee yet (priority-ordered pick-up queue)
 
-  Features:
-    • Self-assign from the Unassigned tab (one click → complaint moves to My Queue)
-    • Quick status update without opening the detail page
-    • Priority sort (CRITICAL → HIGH → MEDIUM → LOW)
-    • Filter by status within each tab
+  CHANGE in v2.0 (production hardening):
+    v1.3 called complaintsApi.list() once, loaded EVERY complaint in the
+    system, and split it into "mine"/"unassigned" with a client-side
+    .filter() + .sort() — exactly the kind of unbounded fetch the v1.3
+    report flagged elsewhere ("the browser will freeze"). It also called
+    complaintsApi.selfAssign(), which didn't exist anywhere in api/complaints.js
+    — a guaranteed runtime error the moment "Assign to Me" was clicked.
 
-  MENTOR NOTE — why a separate page from ComplaintList?
-  ComplaintList shows ALL complaints — it's a management view for admin.
-  StaffQueue is a work-queue view — it shows what THIS staff member needs to
-  act on. Mixing them would require complex filters. Two focused views > one
-  Swiss-army-knife view.
+    v2.0 uses two dedicated, paginated, server-sorted endpoints instead:
+    GET /complaints/queue/mine and GET /complaints/queue/unassigned (the
+    unassigned one is already priority-then-age ordered by the database —
+    see ComplaintRepository.findUnassignedQueue()). selfAssign() now exists
+    and calls the real backend endpoint.
 */
 
-const PRIORITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }
+const PAGE_SIZE = 20
 
 export default function StaffQueue() {
-  const { user } = useAuth()
-  const toast     = useToast()
+  const toast = useToast()
 
-  const [tab,        setTab]        = useState('mine')    // 'mine' | 'unassigned'
-  const [all,        setAll]        = useState([])
-  const [loading,    setLoading]    = useState(true)
-  const [assigning,  setAssigning]  = useState({})        // { [id]: true }
+  const [tab, setTab] = useState('mine') // 'mine' | 'unassigned'
+  const [minePage,       setMinePage]       = useState({ content: [], page: 0, totalPages: 0, totalElements: 0 })
+  const [unassignedPage, setUnassignedPage] = useState({ content: [], page: 0, totalPages: 0, totalElements: 0 })
+  const [mineNumber,       setMineNumber]       = useState(0)
+  const [unassignedNumber, setUnassignedNumber] = useState(0)
+  const [loading,   setLoading]   = useState(true)
+  const [assigning, setAssigning] = useState({}) // { [id]: true }
 
-  const mine       = all.filter(c => c.assignedToId !== null)
-  const unassigned = all.filter(c => c.assignedToId === null
-    && !['RESOLVED', 'CLOSED', 'REJECTED'].includes(c.status))
+  const loadMine = useCallback(() => {
+    return complaintsApi.queueMine({ page: mineNumber, size: PAGE_SIZE }).then(setMinePage)
+  }, [mineNumber])
 
-  const displayed  = tab === 'mine' ? mine : unassigned
+  const loadUnassigned = useCallback(() => {
+    return complaintsApi.queueUnassigned({ page: unassignedNumber, size: PAGE_SIZE }).then(setUnassignedPage)
+  }, [unassignedNumber])
 
-  const load = useCallback(() => {
+  const loadAll = useCallback(() => {
     setLoading(true)
-    complaintsApi.list()
-      .then(data => {
-        // Sort by priority then by submitted date (oldest first for FIFO)
-        const sorted = [...data].sort((a, b) => {
-          const pDiff = (PRIORITY_ORDER[a.priority] ?? 3) - (PRIORITY_ORDER[b.priority] ?? 3)
-          if (pDiff !== 0) return pDiff
-          return new Date(a.submittedAt) - new Date(b.submittedAt)
-        })
-        setAll(sorted)
-      })
-      .catch(() => toast.error('Failed to load complaints.'))
+    Promise.all([loadMine(), loadUnassigned()])
+      .catch(() => toast.error('Failed to load your queue.'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [loadMine, loadUnassigned])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { loadAll() }, [loadAll])
 
   const handleSelfAssign = async (c) => {
     setAssigning(prev => ({ ...prev, [c.id]: true }))
     try {
-      const updated = await complaintsApi.selfAssign(c.id)
-      // Replace in local state — no re-fetch needed
-      setAll(prev => prev.map(x => x.id === updated.id ? updated : x))
+      await complaintsApi.selfAssign(c.id)
       toast.success(`Complaint #${c.id} assigned to you. Status → In Review.`)
-      // Switch to My Queue tab so user sees it there
       setTab('mine')
+      await loadAll()
     } catch (err) {
       toast.error(err.response?.data?.message ?? 'Failed to assign complaint.')
     } finally {
       setAssigning(prev => ({ ...prev, [c.id]: false }))
     }
   }
+
+  const displayedPage   = tab === 'mine' ? minePage : unassignedPage
+  const displayedNumber = tab === 'mine' ? mineNumber : unassignedNumber
+  const setDisplayedNumber = tab === 'mine' ? setMineNumber : setUnassignedNumber
+  const rows = displayedPage.content
 
   return (
     <div className="shell">
@@ -89,17 +88,19 @@ export default function StaffQueue() {
         <div className="page-content">
           <PageHeader
             title="My Queue"
-            subtitle="Complaints assigned to you and unassigned complaints available to pick up."
+            subtitle="Complaints assigned to you, and unassigned complaints available to pick up."
           />
 
           {/* ── Tab switcher ── */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: '1.25rem' }}>
+          <div style={{ display: 'flex', gap: 4, marginBottom: '1.25rem' }} role="tablist">
             {[
-              { key: 'mine',       label: `My Queue (${mine.length})` },
-              { key: 'unassigned', label: `Unassigned (${unassigned.length})` },
+              { key: 'mine',       label: `My Queue (${minePage.totalElements})` },
+              { key: 'unassigned', label: `Unassigned (${unassignedPage.totalElements})` },
             ].map(t => (
               <button
                 key={t.key}
+                role="tab"
+                aria-selected={tab === t.key}
                 className={'filter-tab' + (tab === t.key ? ' filter-tab-active' : '')}
                 onClick={() => setTab(t.key)}
               >
@@ -114,7 +115,7 @@ export default function StaffQueue() {
             </div>
           )}
 
-          {!loading && displayed.length === 0 && (
+          {!loading && rows.length === 0 && (
             <EmptyState
               message={
                 tab === 'mine'
@@ -124,7 +125,7 @@ export default function StaffQueue() {
             />
           )}
 
-          {!loading && displayed.length > 0 && (
+          {!loading && rows.length > 0 && (
             <div className="table-container">
               <table className="complaint-table">
                 <thead>
@@ -140,11 +141,9 @@ export default function StaffQueue() {
                   </tr>
                 </thead>
                 <tbody>
-                  {displayed.map(c => (
+                  {rows.map(c => (
                     <tr key={c.id} style={{
-                      // Highlight CRITICAL complaints
-                      background: c.priority === 'CRITICAL'
-                        ? 'rgba(239,68,68,0.04)' : undefined,
+                      background: c.priority === 'CRITICAL' ? 'rgba(239,68,68,0.04)' : undefined,
                     }}>
                       <td className="td-id">#{c.id}</td>
                       <td className="td-subject">
@@ -182,6 +181,12 @@ export default function StaffQueue() {
                   ))}
                 </tbody>
               </table>
+              <Pagination
+                page={displayedPage.page}
+                totalPages={displayedPage.totalPages}
+                totalElements={displayedPage.totalElements}
+                onPageChange={setDisplayedNumber}
+              />
             </div>
           )}
         </div>

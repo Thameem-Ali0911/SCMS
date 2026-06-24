@@ -1,36 +1,26 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { complaintsApi } from '../api/complaints'
+import { categoriesApi } from '../api/categories'
 import Sidebar from '../components/Sidebar'
 import { Navbar, PageHeader, Footer } from '../components/Layout'
+import { Spinner } from '../components/UI'
 
 /*
   NewComplaint — form for students to file a new complaint.
 
-  MENTOR NOTE — controlled form pattern in React:
-  Every input is a "controlled component" — its value is stored in React state,
-  and every keystroke calls setState via the onChange handler. This means:
-    1. React state is always the single source of truth for the form
-    2. We can validate the state before submission
-    3. We can clear the form after success (just reset the state object)
-  The alternative (uncontrolled with refs) is messier for multi-field forms.
+  CHANGE in v2.0 (production hardening):
+    Categories are now fetched from GET /api/categories instead of a
+    hardcoded CATEGORIES array — see CategoryService.java. An admin can add
+    a new category from the Admin UI and it appears here immediately, with
+    zero frontend code changes. The form now submits `categoryId` (a real
+    FK) instead of a free-text category string.
 
-  MENTOR NOTE — client-side validation vs server-side validation:
-  We validate here for fast UX feedback (no network round-trip).
-  The backend ALSO validates (via @Valid + @NotBlank etc) as the real gate.
-  Both layers are necessary — client-side is UX, server-side is security.
+  MENTOR NOTE — controlled form pattern in React (unchanged from v1.3):
+  Every input is a "controlled component" — its value is stored in React
+  state, validated client-side for fast feedback, AND re-validated
+  server-side (the real security gate) via @Valid + @NotBlank etc.
 */
-
-const CATEGORIES = [
-  'IT & Infrastructure',
-  'Academics',
-  'Hostel & Facilities',
-  'Library',
-  'Transport',
-  'Administration',
-  'Canteen',
-  'Other',
-]
 
 const PRIORITIES = [
   { value: 'LOW',      label: 'Low — minor inconvenience' },
@@ -39,7 +29,7 @@ const PRIORITIES = [
   { value: 'CRITICAL', label: 'Critical — urgent, needs immediate attention' },
 ]
 
-const INIT = { subject: '', description: '', category: '', priority: 'MEDIUM' }
+const INIT = { subject: '', description: '', categoryId: '', priority: 'MEDIUM' }
 
 export default function NewComplaint() {
   const navigate = useNavigate()
@@ -47,6 +37,17 @@ export default function NewComplaint() {
   const [errors,     setErrors]    = useState({})
   const [submitting, setSubmitting] = useState(false)
   const [serverError, setServerError] = useState(null)
+
+  const [categories, setCategories] = useState([])
+  const [loadingCategories, setLoadingCategories] = useState(true)
+  const [categoriesError, setCategoriesError] = useState(null)
+
+  useEffect(() => {
+    categoriesApi.listActive()
+      .then(setCategories)
+      .catch(() => setCategoriesError('Could not load categories. Please refresh the page.'))
+      .finally(() => setLoadingCategories(false))
+  }, [])
 
   const set = (field) => (e) =>
     setForm(prev => ({ ...prev, [field]: e.target.value }))
@@ -57,8 +58,8 @@ export default function NewComplaint() {
       e.subject = 'Subject must be at least 5 characters.'
     if (!form.description.trim() || form.description.trim().length < 20)
       e.description = 'Description must be at least 20 characters.'
-    if (!form.category)
-      e.category = 'Please select a category.'
+    if (!form.categoryId)
+      e.categoryId = 'Please select a category.'
     return e
   }
 
@@ -73,8 +74,12 @@ export default function NewComplaint() {
     setSubmitting(true)
     setServerError(null)
     try {
-      const created = await complaintsApi.create(form)
-      // Redirect to the new complaint's detail page
+      const created = await complaintsApi.create({
+        subject: form.subject,
+        description: form.description,
+        categoryId: Number(form.categoryId),
+        priority: form.priority,
+      })
       navigate(`/complaints/${created.id}`, {
         state: { flash: 'Complaint submitted successfully.' }
       })
@@ -109,6 +114,11 @@ export default function NewComplaint() {
               {serverError}
             </div>
           )}
+          {categoriesError && (
+            <div className="alert alert-error" style={{ marginBottom: '1.5rem' }}>
+              {categoriesError}
+            </div>
+          )}
 
           <div className="form-card">
             <form onSubmit={handleSubmit} noValidate>
@@ -134,21 +144,25 @@ export default function NewComplaint() {
               {/* Category + Priority row */}
               <div className="field-row">
                 <div className="field field-half">
-                  <label className="field-label" htmlFor="category">
+                  <label className="field-label" htmlFor="categoryId">
                     Category <span className="required">*</span>
                   </label>
-                  <select
-                    id="category"
-                    className={'field-input' + (errors.category ? ' field-input-error' : '')}
-                    value={form.category}
-                    onChange={set('category')}
-                  >
-                    <option value="">Select category…</option>
-                    {CATEGORIES.map(c => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
-                  {errors.category && <p className="field-error">{errors.category}</p>}
+                  {loadingCategories ? (
+                    <div style={{ padding: '.5rem 0' }}><Spinner size={18} /></div>
+                  ) : (
+                    <select
+                      id="categoryId"
+                      className={'field-input' + (errors.categoryId ? ' field-input-error' : '')}
+                      value={form.categoryId}
+                      onChange={set('categoryId')}
+                    >
+                      <option value="">Select category…</option>
+                      {categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  )}
+                  {errors.categoryId && <p className="field-error">{errors.categoryId}</p>}
                 </div>
 
                 <div className="field field-half">
@@ -193,7 +207,7 @@ export default function NewComplaint() {
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={submitting}
+                  disabled={submitting || loadingCategories}
                 >
                   {submitting ? 'Submitting…' : 'Submit Complaint'}
                 </button>
