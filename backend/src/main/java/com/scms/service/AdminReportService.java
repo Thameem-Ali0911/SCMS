@@ -1,19 +1,29 @@
 package com.scms.service;
 
-import com.scms.dto.AdminDtos.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import org.springframework.stereotype.Service;
+
+import com.scms.dto.AdminDtos.CategoryBreakdown;
+import com.scms.dto.AdminDtos.DailyCount;
+import com.scms.dto.AdminDtos.ReportSummary;
+import com.scms.dto.AdminDtos.StatusBreakdown;
+import com.scms.dto.AdminDtos.UserComplaintCount;
 import com.scms.model.Complaint;
 import com.scms.repository.ComplaintRepository;
 import com.scms.repository.ComplaintRepository.CategoryCount;
 import com.scms.repository.ComplaintRepository.StatusCount;
 import com.scms.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.*;
-import java.util.stream.Collectors;
+import lombok.RequiredArgsConstructor;
 
 /**
  * AdminReportService — analytics/reporting, split out of the v1.3 god-class
@@ -21,54 +31,54 @@ import java.util.stream.Collectors;
  *
  * CHANGE in v2.0 (production hardening) — the N+1 fix, point by point:
  *
- *   • getReportSummary() v1.3: 7 separate countByStatus() calls + a full
- *     findAll().stream().filter(active) for activeUsers + 2 more findAll()
- *     for resolved/closed timing — 12+ queries for one API call. v2.0: ONE
- *     countGroupedByStatus() query (status breakdown reused for both
- *     summary AND the by-status chart) + countByActiveTrue() (one indexed
- *     COUNT query, not a full table load).
+ * • getReportSummary() v1.3: 7 separate countByStatus() calls + a full
+ * findAll().stream().filter(active) for activeUsers + 2 more findAll() for
+ * resolved/closed timing — 12+ queries for one API call. v2.0: ONE
+ * countGroupedByStatus() query (status breakdown reused for both summary AND
+ * the by-status chart) + countByActiveTrue() (one indexed COUNT query, not a
+ * full table load).
  *
- *   • getCategoryBreakdown() v1.3: findAllByOrderBySubmittedAtDesc() — loads
- *     EVERY complaint in the table into the JVM to group them in Java. v2.0:
- *     countGroupedByCategory() — one GROUP BY query, database-side.
+ * • getCategoryBreakdown() v1.3: findAllByOrderBySubmittedAtDesc() — loads
+ * EVERY complaint in the table into the JVM to group them in Java. v2.0:
+ * countGroupedByCategory() — one GROUP BY query, database-side.
  *
- *   • getTopComplainants() v1.3: 3N+1 queries (one userRepository.findAll()
- *     + 3 count queries per user). v2.0: reuses
- *     ComplaintStatsAggregator.perUserCounts() — the SAME single query
- *     listAllUsers() already needed, computed once and shared.
+ * • getTopComplainants() v1.3: 3N+1 queries (one userRepository.findAll() + 3
+ * count queries per user). v2.0: reuses
+ * ComplaintStatsAggregator.perUserCounts() — the SAME single query
+ * listAllUsers() already needed, computed once and shared.
  *
- *   • getDailyTimeline() is left as a bounded 30-day window query — this
- *     was never the actual problem v1.3 had (a month of complaints for a
- *     college system is not "unbounded"); the methods above were.
+ * • getDailyTimeline() is left as a bounded 30-day window query — this was
+ * never the actual problem v1.3 had (a month of complaints for a college system
+ * is not "unbounded"); the methods above were.
  */
 @Service
 @RequiredArgsConstructor
 public class AdminReportService {
 
-    private final ComplaintRepository      complaintRepository;
-    private final UserRepository           userRepository;
+    private final ComplaintRepository complaintRepository;
+    private final UserRepository userRepository;
     private final ComplaintStatsAggregator statsAggregator;
 
     public ReportSummary getReportSummary() {
         Map<Complaint.Status, Long> byStatus = statusCountMap();
 
         long submitted = byStatus.getOrDefault(Complaint.Status.SUBMITTED, 0L);
-        long inReview  = byStatus.getOrDefault(Complaint.Status.IN_REVIEW, 0L);
-        long inProg    = byStatus.getOrDefault(Complaint.Status.IN_PROGRESS, 0L);
-        long resolved  = byStatus.getOrDefault(Complaint.Status.RESOLVED, 0L);
-        long closed    = byStatus.getOrDefault(Complaint.Status.CLOSED, 0L);
-        long rejected  = byStatus.getOrDefault(Complaint.Status.REJECTED, 0L);
-        long open      = submitted + inReview + inProg;
-        long total     = byStatus.values().stream().mapToLong(Long::longValue).sum();
+        long inReview = byStatus.getOrDefault(Complaint.Status.IN_REVIEW, 0L);
+        long inProg = byStatus.getOrDefault(Complaint.Status.IN_PROGRESS, 0L);
+        long resolved = byStatus.getOrDefault(Complaint.Status.RESOLVED, 0L);
+        long closed = byStatus.getOrDefault(Complaint.Status.CLOSED, 0L);
+        long rejected = byStatus.getOrDefault(Complaint.Status.REJECTED, 0L);
+        long open = submitted + inReview + inProg;
+        long total = byStatus.values().stream().mapToLong(Long::longValue).sum();
 
-        long totalUsers  = userRepository.count();
+        long totalUsers = userRepository.count();
         long activeUsers = userRepository.countByActiveTrue();
 
         double avgHours = averageResolutionHours();
 
-        LocalDateTime now        = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now();
         LocalDateTime startMonth = now.withDayOfMonth(1).withHour(0).withMinute(0).withSecond(0);
-        LocalDateTime startPrev  = startMonth.minusMonths(1);
+        LocalDateTime startPrev = startMonth.minusMonths(1);
 
         long thisMonth = complaintRepository.countBySubmittedAtBetween(startMonth, now);
         long lastMonth = complaintRepository.countBySubmittedAtBetween(startPrev, startMonth);
@@ -98,10 +108,10 @@ public class AdminReportService {
 
         return byStatus.entrySet().stream()
                 .map(e -> StatusBreakdown.builder()
-                        .status(e.getKey().name())
-                        .count(e.getValue())
-                        .percentage(round1(e.getValue() * 100.0 / total))
-                        .build())
+                .status(e.getKey().name())
+                .count(e.getValue())
+                .percentage(round1(e.getValue() * 100.0 / total))
+                .build())
                 .sorted(Comparator.comparingLong(StatusBreakdown::getCount).reversed())
                 .collect(Collectors.toList());
     }
@@ -112,15 +122,18 @@ public class AdminReportService {
 
         return rows.stream()
                 .map(r -> CategoryBreakdown.builder()
-                        .category(r.getCategoryName())
-                        .count(r.getTotal())
-                        .percentage(round1(r.getTotal() * 100.0 / total))
-                        .build())
+                .category(r.getCategoryName())
+                .count(r.getTotal())
+                .percentage(round1(r.getTotal() * 100.0 / total))
+                .build())
                 .sorted(Comparator.comparingLong(CategoryBreakdown::getCount).reversed())
                 .collect(Collectors.toList());
     }
 
-    /** Top 10 users by complaint volume — reuses the SAME aggregate query listAllUsers() uses. */
+    /**
+     * Top 10 users by complaint volume — reuses the SAME aggregate query
+     * listAllUsers() uses.
+     */
     public List<UserComplaintCount> getTopComplainants() {
         Map<Long, ComplaintStatsAggregator.PerUserCounts> perUser = statsAggregator.perUserCounts();
         Map<Long, String> namesByUserId = userRepository.findAllById(perUser.keySet()).stream()
@@ -144,18 +157,23 @@ public class AdminReportService {
                 .collect(Collectors.toList());
     }
 
-    /** Bounded 30-day window — see class javadoc for why this one was left as-is. */
+    /**
+     * Bounded 30-day window — see class javadoc for why this one was left
+     * as-is.
+     */
     public List<DailyCount> getDailyTimeline() {
         LocalDate today = LocalDate.now();
-        LocalDate from  = today.minusDays(29);
+        LocalDate from = today.minusDays(29);
 
         LocalDateTime windowStart = from.atStartOfDay();
-        LocalDateTime windowEnd   = today.plusDays(1).atStartOfDay();
+        LocalDateTime windowEnd = today.plusDays(1).atStartOfDay();
 
         List<Complaint> inWindow = complaintRepository.findBySubmittedAtBetween(windowStart, windowEnd);
 
         Map<LocalDate, Long> countByDate = inWindow.stream()
-                .collect(Collectors.groupingBy(c -> c.getSubmittedAt().toLocalDate(), Collectors.counting()));
+                .collect(Collectors.groupingBy(
+                        (Complaint c) -> c.getSubmittedAt().toLocalDate(),
+                        Collectors.counting()));
 
         List<DailyCount> result = new ArrayList<>();
         for (LocalDate d = from; !d.isAfter(today); d = d.plusDays(1)) {
@@ -165,7 +183,6 @@ public class AdminReportService {
     }
 
     // ── Private helpers ────────────────────────────────────────────────────
-
     private Map<Complaint.Status, Long> statusCountMap() {
         Map<Complaint.Status, Long> map = new EnumMap<>(Complaint.Status.class);
         for (StatusCount row : complaintRepository.countGroupedByStatus()) {
@@ -177,17 +194,17 @@ public class AdminReportService {
     /**
      * NOTE — documented limitation, not an oversight: this loads every
      * historically resolved/closed complaint into memory to average
-     * submittedAt→resolvedAt. Unlike the queries above, this one DOES grow
-     * with total lifetime volume, not a bounded window. At meaningful scale
-     * (tens of thousands of resolved complaints), replace with a native
-     * query (`AVG(TIMESTAMPDIFF(HOUR, submitted_at, resolved_at))`) — left
-     * as JPQL here because cross-database datetime-diff functions aren't
-     * portable, and a native query would tie this method to MySQL syntax.
-     * Tracked in README.md's roadmap section.
+     * submittedAt→resolvedAt. Unlike the queries above, this one DOES grow with
+     * total lifetime volume, not a bounded window. At meaningful scale (tens of
+     * thousands of resolved complaints), replace with a native query
+     * (`AVG(TIMESTAMPDIFF(HOUR, submitted_at, resolved_at))`) — left as JPQL
+     * here because cross-database datetime-diff functions aren't portable, and
+     * a native query would tie this method to MySQL syntax. Tracked in
+     * README.md's roadmap section.
      */
     private double averageResolutionHours() {
         List<Complaint> resolved = complaintRepository.findByStatusOrderBySubmittedAtDesc(Complaint.Status.RESOLVED);
-        List<Complaint> closed   = complaintRepository.findByStatusOrderBySubmittedAtDesc(Complaint.Status.CLOSED);
+        List<Complaint> closed = complaintRepository.findByStatusOrderBySubmittedAtDesc(Complaint.Status.CLOSED);
 
         List<Complaint> finished = new ArrayList<>(resolved);
         finished.addAll(closed);

@@ -1,10 +1,7 @@
 package com.scms.config;
 
-import com.scms.common.HttpRequestUtils;
-import com.scms.security.JwtAuthFilter;
-import com.scms.security.RequestIdFilter;
-import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -26,43 +23,45 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import java.util.List;
+import com.scms.common.HttpRequestUtils;
+import com.scms.security.JwtAuthFilter;
+import com.scms.security.RequestIdFilter;
+
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 
 /**
  * SecurityConfig — the heart of SCMS's authentication/authorization posture.
  *
  * CHANGE in v2.0 (production hardening):
  *
- *   • @EnableMethodSecurity + URL-level role rules. v1.3 finding: "SecurityConfig
- *     grants all authenticated requests to all endpoints — no URL-level role
- *     enforcement, only method-level [manual requireAdmin() checks]". Now
- *     /api/admin/** requires ROLE_ADMIN at the HTTP layer itself, and the
- *     STAFF-specific queue/assignment endpoints in ComplaintController carry
- *     their own @PreAuthorize("hasAnyRole('STAFF','ADMIN')") — a future
- *     developer adding a new admin controller method gets URL-level
- *     protection automatically by virtue of the path prefix, instead of
- *     having to remember to call requireAdmin() by hand in every method body
- *     (the old failure mode: forget the call once, ship an unauthenticated
- *     admin endpoint).
+ * • @EnableMethodSecurity + URL-level role rules. v1.3 finding: "SecurityConfig
+ * grants all authenticated requests to all endpoints — no URL-level role
+ * enforcement, only method-level [manual requireAdmin() checks]". Now
+ * /api/admin/** requires ROLE_ADMIN at the HTTP layer itself, and the
+ * STAFF-specific queue/assignment endpoints in ComplaintController carry their
+ * own @PreAuthorize("hasAnyRole('STAFF','ADMIN')") — a future developer adding
+ * a new admin controller method gets URL-level protection automatically by
+ * virtue of the path prefix, instead of having to remember to call
+ * requireAdmin() by hand in every method body (the old failure mode: forget the
+ * call once, ship an unauthenticated admin endpoint).
  *
- *   • Conditional HSTS. v1.3 finding: "HSTS is commented out — runs over
- *     HTTP with zero transport security in production." HSTS is now a real
- *     header, gated by `security.hsts.enabled` (default true) so it can be
- *     turned off only for local HTTP development, never silently shipped off
- *     in a real deployment.
+ * • Conditional HSTS. v1.3 finding: "HSTS is commented out — runs over HTTP
+ * with zero transport security in production." HSTS is now a real header, gated
+ * by `security.hsts.enabled` (default true) so it can be turned off only for
+ * local HTTP development, never silently shipped off in a real deployment.
  *
- *   • Trusted-proxy configuration is wired into HttpRequestUtils here at
- *     startup from `security.trusted-proxies` — see HttpRequestUtils for the
- *     X-Forwarded-For spoofing fix this enables.
+ * • Trusted-proxy configuration is wired into HttpRequestUtils here at startup
+ * from `security.trusted-proxies` — see HttpRequestUtils for the
+ * X-Forwarded-For spoofing fix this enables.
  *
- *   • CSRF remains disabled for the stateless Bearer-token API surface (a
- *     forged cross-site request cannot attach an Authorization header, so
- *     CSRF does not apply to it). The ONE cookie this API issues — the
- *     refresh-token cookie — is scoped to path /api/auth, marked HttpOnly +
- *     SameSite=Strict, and the refresh endpoint only ever issues new tokens
- *     (it cannot modify data), which is the documented threat-model
- *     rationale the v1.3 report asked for ("No CSRF protection documentation
- *     explaining the threat model to future maintainers").
+ * • CSRF remains disabled for the stateless Bearer-token API surface (a forged
+ * cross-site request cannot attach an Authorization header, so CSRF does not
+ * apply to it). The ONE cookie this API issues — the refresh-token cookie — is
+ * scoped to path /api/auth, marked HttpOnly + SameSite=Strict, and the refresh
+ * endpoint only ever issues new tokens (it cannot modify data), which is the
+ * documented threat-model rationale the v1.3 report asked for ("No CSRF
+ * protection documentation explaining the threat model to future maintainers").
  */
 @Configuration
 @EnableWebSecurity
@@ -70,8 +69,8 @@ import java.util.List;
 @RequiredArgsConstructor
 public class SecurityConfig {
 
-    private final JwtAuthFilter     jwtAuthFilter;
-    private final RequestIdFilter   requestIdFilter;
+    private final JwtAuthFilter jwtAuthFilter;
+    private final RequestIdFilter requestIdFilter;
     private final UserDetailsService userDetailsService;
 
     @Value("${cors.allowed-origins}")
@@ -98,7 +97,8 @@ public class SecurityConfig {
 
     @Bean
     public DaoAuthenticationProvider authenticationProvider(PasswordEncoder passwordEncoder) {
-        DaoAuthenticationProvider provider = new DaoAuthenticationProvider(userDetailsService);
+        DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+        provider.setUserDetailsService(userDetailsService);
         provider.setPasswordEncoder(passwordEncoder);
         return provider;
     }
@@ -127,10 +127,10 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
-            .csrf(csrf -> csrf.disable())
-            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-            .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
+                .csrf(csrf -> csrf.disable())
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/categories/**").authenticated() // read access for the complaint form; writes are @PreAuthorize-gated in the controller
                 .requestMatchers("/actuator/health", "/actuator/info").permitAll()
@@ -138,22 +138,23 @@ public class SecurityConfig {
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
-            )
-            .headers(headers -> {
-                headers.frameOptions(frame -> frame.deny());
-                headers.contentTypeOptions(contentTypeOptions -> {});
-                headers.referrerPolicy(referrer -> referrer
-                        .policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
-                headers.addHeaderWriter(new StaticHeadersWriter("Content-Security-Policy",
-                        "default-src 'self'; frame-ancestors 'none'; object-src 'none'"));
-                if (hstsEnabled) {
-                    headers.httpStrictTransportSecurity(hsts -> hsts
-                            .includeSubDomains(true)
-                            .maxAgeInSeconds(31536000));
-                }
-            })
-            .addFilterBefore(requestIdFilter, UsernamePasswordAuthenticationFilter.class)
-            .addFilterAfter(jwtAuthFilter, RequestIdFilter.class);
+                )
+                .headers(headers -> {
+                    headers.frameOptions(frame -> frame.deny());
+                    headers.contentTypeOptions(contentTypeOptions -> {
+                    });
+                    headers.referrerPolicy(referrer -> referrer
+                            .policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
+                    headers.addHeaderWriter(new StaticHeadersWriter("Content-Security-Policy",
+                            "default-src 'self'; frame-ancestors 'none'; object-src 'none'"));
+                    if (hstsEnabled) {
+                        headers.httpStrictTransportSecurity(hsts -> hsts
+                                .includeSubDomains(true)
+                                .maxAgeInSeconds(31536000));
+                    }
+                })
+                .addFilterBefore(requestIdFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(jwtAuthFilter, RequestIdFilter.class);
 
         return http.build();
     }
