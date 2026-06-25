@@ -1,0 +1,6 @@
+name: SCMS ENV
+values:
+  - key: baseUrl
+    value: ''
+  - key: accessToken
+    value: ''
